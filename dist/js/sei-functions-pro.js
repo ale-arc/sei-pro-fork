@@ -8666,10 +8666,12 @@ function getUrlNewDocArvore() {
 function openWindowEditor(urlEditor, idUser) {
     var id_documento = getParamsUrlPro(urlEditor).id_documento
     var janelaEditor = infraAbrirJanela('', 'janelaEditor_'+idUser+'_'+id_documento, parent.infraClientWidth(), parent.infraClientHeight(), 'location=0,status=0,resizable=1,scrollbars=1', false);
-    if (janelaEditor.location=='about:blank') {
-        janelaEditor.location.href = urlEditor;
+    if (janelaEditor) {
+        if (janelaEditor.location=='about:blank') {
+            janelaEditor.location.href = urlEditor;
+        }
+        janelaEditor.focus();
     }
-    janelaEditor.focus();
 }
 function setResizeIfrArvore() {
     var ifrArvore = $('#ifrArvore');
