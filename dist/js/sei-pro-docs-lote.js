@@ -300,8 +300,27 @@ var docsLote_printDataCrossing = async () => {
                         </tr>
                         <tr style="display:none" class="containerTipoProcessoSelect">
                             <td colspan="2">
-                                <p style="font-size: 1.2em;"><i class="fas fa-comment-dots cinzaColor"></i> Especifica\u00E7\u00E3o do processo: (Dispon\u00EDvel campos din\u00E2micos da planilha)</p>
+                                <p style="font-size: 1.2em;"><i class="fas fa-comment-dots cinzaColor"></i> Especificação do processo: (Disponível campos dinâmicos da planilha)</p>
                                 <input type="text" class="infraText" id="txtEspecificacaoProcesso" style="width: 480px;padding: 0.8em;" placeholder="Ex: Certificado de ##nome_aluno##">
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="width: 50px;">
+                                <div style="margin: 10px 0;font-size: 9pt;display: inline-block;transform: scale(0.9);float: left;">
+                                    <div class="onoffswitch" style="float: left;margin-right: 1em;margin-left: 0;">
+                                        <input type="checkbox" onchange="changeExistingProcs(this)" name="onoffswitch" class="onoffswitch-checkbox" id="existingProcs" data-type="setdate" tabindex="0">
+                                        <label class="onoff-switch-label" for="existingProcs"></label>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>     
+                                <label for="existingProcs">Criar documentos em processos existentes (informados na planilha)</label>
+                            </td>
+                        </tr>
+                        <tr style="display:none" class="containerColunaProcessoSelect">
+                            <td colspan="2">
+                                <p style="font-size: 1.2em;"><i class="fas fa-file-alt cinzaColor"></i> Coluna com número do processo:</p>
+                                <select onchange="checkColunaProcessoSelect()" id="colunaProcessoSelect"><option value="">Selecione a coluna do processo</option>${selectData}</select>
                             </td>
                         </tr>
                     </tbody>
@@ -324,6 +343,14 @@ var docsLote_printDataCrossing = async () => {
                 }
             });    
             $('#tipoProcessoSelect_chosen').css('width', '500px');
+            $('#colunaProcessoSelect').chosen({
+                placeholder_text_single: ' ', 
+                no_results_text: 'Nenhum resultado encontrado',
+                normalize_search_text: function(text) {
+                    return removeAcentos(text.toLowerCase());
+                }
+            });    
+            $('#colunaProcessoSelect_chosen').css('width', '500px');
 
     }
     setTimeout(() => {
@@ -336,6 +363,9 @@ var docsLote_printDataCrossing = async () => {
 
 var changeNewProcs = async (this_) => {
     if ($(this_).is(':checked')) {
+        if ($('#existingProcs').is(':checked')) {
+            $('#existingProcs').prop('checked', false).trigger('change');
+        }
         $('.containerTipoProcessoSelect').show();
         checkTipoProcessoSelect();
     } else {
@@ -346,6 +376,27 @@ var changeNewProcs = async (this_) => {
 
 var checkTipoProcessoSelect = () => {
     if ($('#tipoProcessoSelect').val() && $('#tipoProcessoSelect').val() != 'null') {
+        $("#btnConfirm").prop('disabled', false).removeClass('ui-button-disabled ui-state-disabled');
+    } else {
+        $("#btnConfirm").prop('disabled', true).addClass('ui-button-disabled ui-state-disabled');
+    }
+}
+
+var changeExistingProcs = async (this_) => {
+    if ($(this_).is(':checked')) {
+        if ($('#newProcs').is(':checked')) {
+            $('#newProcs').prop('checked', false).trigger('change');
+        }
+        $('.containerColunaProcessoSelect').show();
+        checkColunaProcessoSelect();
+    } else {
+        $('.containerColunaProcessoSelect').hide();
+        $("#btnConfirm").prop('disabled', false).removeClass('ui-button-disabled ui-state-disabled');
+    }
+};
+
+var checkColunaProcessoSelect = () => {
+    if ($('#colunaProcessoSelect').val() && $('#colunaProcessoSelect').val() != '') {
         $("#btnConfirm").prop('disabled', false).removeClass('ui-button-disabled ui-state-disabled');
     } else {
         $("#btnConfirm").prop('disabled', true).addClass('ui-button-disabled ui-state-disabled');
@@ -363,6 +414,41 @@ var docsLote_getLinkNewDoc = async (param, dataCSV) => {
         if (urlProcesso) {
             urlNewDoc = await docsLote_getUrlNewDoc(urlProcesso);
         }
+    } else if (param.createExistingProcs) {
+        const processNumber = dataCSV[param.colunaProcesso];
+        if (!processNumber) {
+            throw new Error(`Número de processo vazio ou inválido na linha.`);
+        }
+        
+        let urlSearch = $('#frmPesquisaProtocolo', window.parent.document).attr('action') || 
+                        $('#frmPesquisaProtocolo').attr('action') || 
+                        $(`${mainMenu} a[href*="acao=protocolo_pesquisar"]`).attr('href') ||
+                        $(`${mainMenu} a[href*="protocolo_pesquisa"]`).attr('href');
+                        
+        if (urlSearch) {
+            urlSearch = urlSearch.replace(/acao=[^&]+/, 'acao=protocolo_pesquisar');
+        } else {
+            const urlParams = getParamsUrlPro(window.location.href);
+            urlSearch = 'controlador.php?acao=protocolo_pesquisar';
+            if (urlParams.infra_sistema) urlSearch += `&infra_sistema=${urlParams.infra_sistema}`;
+            if (urlParams.infra_unidade_atual) urlSearch += `&infra_unidade_atual=${urlParams.infra_unidade_atual}`;
+            if (urlParams.infra_hash) urlSearch += `&infra_hash=${urlParams.infra_hash}`;
+        }
+        
+        const xhr = new XMLHttpRequest();
+        await $.ajax({
+            url: urlSearch,
+            method: 'POST',
+            data: { txtPesquisaRapida: processNumber.trim() },
+            xhr: function() { return xhr; }
+        });
+        
+        const redirectUrl = xhr.responseURL;
+        if (redirectUrl && redirectUrl.includes('acao=procedimento_trabalhar')) {
+            urlNewDoc = await docsLote_getUrlNewDoc(redirectUrl);
+        } else {
+            throw new Error(`Processo ${processNumber} não localizado no SEI ou sem permissão de acesso.`);
+        }
     } else {
         urlNewDoc = getUrlNewDocArvore();
     }
@@ -371,7 +457,7 @@ var docsLote_getLinkNewDoc = async (param, dataCSV) => {
 var docsLote_execute = async (param) => {
     aborted = false;
 
-    if (!param.createNewProcs && !getUrlNewDocArvore()) {
+    if (!param.createNewProcs && !param.createExistingProcs && !getUrlNewDocArvore()) {
         flagError = true;
         alertaBoxPro('Error', 'exclamation-triangle', 'Erro ao localizar o link de inserir documento. Verifique se o processo encontra-se aberto em sua unidade!');
     } else {
@@ -567,7 +653,10 @@ var docsLote_formNewDoc = async (urlFormNewDoc, data, dataDialog) => {
 
     const regex = new RegExp(Object.keys(docsLote_normalChars).join('|'), 'g');
     // let nomeArvore = forceNames ? data[dataDialog.docsNames].replace(regex, (match) => docsLote_normalChars[match]).substring(0, 50) : data[dataDialog.docsNames].substring(0, 50);
-    let nomeArvore = removeAcentos(data[dataDialog.docsNames].substring(0, 50)).trim();
+    let nomeArvore = "";
+    if (dataDialog.docsNames && data[dataDialog.docsNames]) {
+        nomeArvore = removeAcentos(data[dataDialog.docsNames].substring(0, 50)).trim();
+    }
 
     if (!numeroOpcional || forceNames) {
         params.txtNumero = nomeArvore;
@@ -949,6 +1038,8 @@ var docLoteModalCruzamentoDados = (nrDoc, csvFile, nrTxtPadrao) => {
                         createNewProcs: $("#newProcs").is(":checked"),
                         idTipoProcedimento: $('#tipoProcessoSelect').val(),
                         txtEspecificacaoProcesso: $('#txtEspecificacaoProcesso').val(),
+                        createExistingProcs: $("#existingProcs").is(":checked"),
+                        colunaProcesso: $('#colunaProcessoSelect').val(),
                         nrDoc: nrDoc,
                         csvFile: csvFile,
                         nrTxtPadrao: nrTxtPadrao
