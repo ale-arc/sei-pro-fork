@@ -323,6 +323,25 @@ var docsLote_printDataCrossing = async () => {
                                 <select onchange="checkColunaProcessoSelect()" id="colunaProcessoSelect"><option value="">Selecione a coluna do processo</option>${selectData}</select>
                             </td>
                         </tr>
+                        <tr>
+                            <td style="width: 50px;">
+                                <div style="margin: 10px 0;font-size: 9pt;display: inline-block;transform: scale(0.9);float: left;">
+                                    <div class="onoffswitch" style="float: left;margin-right: 1em;margin-left: 0;">
+                                        <input type="checkbox" onchange="changeBlocosAssinatura(this)" name="onoffswitch" class="onoffswitch-checkbox" id="blocosAssinatura" tabindex="0">
+                                        <label class="onoff-switch-label" for="blocosAssinatura"></label>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>     
+                                <label for="blocosAssinatura">Incluir documentos gerados em bloco de assinatura</label>
+                            </td>
+                        </tr>
+                        <tr style="display:none" class="containerBlocoAssinatura">
+                            <td colspan="2">
+                                <p style="font-size: 1.2em;"><i class="fas fa-layer-group cinzaColor"></i> Número do Bloco de Assinatura (Suporta ##coluna##):</p>
+                                <input type="text" class="infraText" id="blocoAssinaturaInput" oninput="checkBlocoAssinaturaInput()" style="width: 480px;padding: 0.8em;" placeholder="Ex: ##bloco_coluna## ou 1234">
+                            </td>
+                        </tr>
                     </tbody>
                 </table>
             </div>
@@ -402,6 +421,23 @@ var checkColunaProcessoSelect = () => {
         $("#btnConfirm").prop('disabled', true).addClass('ui-button-disabled ui-state-disabled');
     }
 }
+var changeBlocosAssinatura = async (this_) => {
+    if ($(this_).is(':checked')) {
+        $('.containerBlocoAssinatura').show();
+        checkBlocoAssinaturaInput();
+    } else {
+        $('.containerBlocoAssinatura').hide();
+        $("#btnConfirm").prop('disabled', false).removeClass('ui-button-disabled ui-state-disabled');
+    }
+};
+
+var checkBlocoAssinaturaInput = () => {
+    if ($('#blocoAssinaturaInput').val() && $('#blocoAssinaturaInput').val().trim() != '') {
+        $("#btnConfirm").prop('disabled', false).removeClass('ui-button-disabled ui-state-disabled');
+    } else {
+        $("#btnConfirm").prop('disabled', true).addClass('ui-button-disabled ui-state-disabled');
+    }
+};
 var docsLote_getLinkNewDoc = async (param, dataCSV) => {
     let urlNewDoc = false;
     if (param.createNewProcs) {
@@ -492,7 +528,18 @@ var docsLote_execute = async (param) => {
                 const response5 = await docsLote_editDocContent(response4.urlEditor, CSVData[i]);
                 const response6 = await docsLote_saveDoc(response5.urlSubmitForm, response5.paramsSaveDoc);
 
-                response6.success && $('#progress').html(`<p style="text-align:center">${i + 1}/${CSVData.length}<span style="display:block;white-space: nowrap;color: #ccc;font-size: 8pt;padding:5px">\u2592\u2592\u2592\u2592\u2592\u2592</span></p>`);
+                if (response6.success) {
+                    if (param.blocosAssinatura && param.blocoAssinaturaInput) {
+                        let blockNum = param.blocoAssinaturaInput.replace(/##(.*?)##/g, function(match, chave) {
+                            return CSVData[i][chave] !== undefined ? CSVData[i][chave] : match;
+                        });
+                        const lastDoc = docsCriados[docsCriados.length - 1];
+                        if (lastDoc) {
+                            await docsLote_incluirEmBloco(lastDoc.id_documento, lastDoc.id_procedimento, blockNum.trim());
+                        }
+                    }
+                    $('#progress').html(`<p style="text-align:center">${i + 1}/${CSVData.length}<span style="display:block;white-space: nowrap;color: #ccc;font-size: 8pt;padding:5px">\u2592\u2592\u2592\u2592\u2592\u2592</span></p>`);
+                }
 
                 if (i + 1 === CSVData.length) throw new Error("cancel");
 
@@ -1040,6 +1087,8 @@ var docLoteModalCruzamentoDados = (nrDoc, csvFile, nrTxtPadrao) => {
                         txtEspecificacaoProcesso: $('#txtEspecificacaoProcesso').val(),
                         createExistingProcs: $("#existingProcs").is(":checked"),
                         colunaProcesso: $('#colunaProcessoSelect').val(),
+                        blocosAssinatura: $("#blocosAssinatura").is(":checked"),
+                        blocoAssinaturaInput: $('#blocoAssinaturaInput').val(),
                         nrDoc: nrDoc,
                         csvFile: csvFile,
                         nrTxtPadrao: nrTxtPadrao
@@ -1438,5 +1487,84 @@ const docsLote_getUrlNewDoc = async (urlProcesso) => {
         console.error('Erro ao obter URL de novo documento:', error);
         alertaBoxPro('Error', 'exclamation-triangle', error.message);
         return null;
+    }
+};
+
+var docsLote_incluirEmBloco = async (id_documento, id_procedimento, numBloco) => {
+    const urlParams = getParamsUrlPro(window.location.href);
+    let urlProc = url_host.replace('controlador.php','') + `controlador.php?acao=procedimento_trabalhar&id_procedimento=${id_procedimento}`;
+    if (urlParams.infra_sistema) urlProc += `&infra_sistema=${urlParams.infra_sistema}`;
+    if (urlParams.infra_unidade_atual) urlProc += `&infra_unidade_atual=${urlParams.infra_unidade_atual}`;
+
+    const htmlProc = await $.ajax({ url: urlProc });
+    const parserProc = new DOMParser();
+    const docProc = parserProc.parseFromString(htmlProc, "text/html");
+    const urlArvore = $(docProc).find('#ifrArvore').attr('src');
+    if (!urlArvore) {
+        let errorMsg = $(docProc).find('.infraMensagem, #divInfraMensagem, .infraErro').text().trim();
+        throw new Error(errorMsg || "Não foi possível carregar a árvore do processo para obter os links autorizados.");
+    }
+
+    const htmlTree = await $.ajax({ url: urlArvore });
+    const regex = new RegExp(`controlador\\.php\\?acao=bloco_escolher[^'"]*id_documento=${id_documento}[^'"]*|controlador\\.php\\?[^'"]*id_documento=${id_documento}[^'"]*acao=bloco_escolher[^'"]*`);
+    const match = htmlTree.match(regex);
+    if (!match) {
+        throw new Error(`Link de inclusão em bloco não localizado para o documento ID ${id_documento} na árvore do processo.`);
+    }
+
+    const urlBloco = match[0].replaceAll('&amp;', '&');
+
+    const htmlPage = await $.ajax({ url: urlBloco });
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(htmlPage, "text/html");
+    const $html = $(doc);
+    
+    const form = $html.find('form');
+    if (form.length === 0) {
+        let errorMsg = $html.find('.infraMensagem, #divInfraMensagem, .infraErro').text().trim();
+        throw new Error(errorMsg || "Formulário de inclusão em bloco não encontrado.");
+    }
+
+    const select = $html.find('#selBloco, select[name="selBloco"]');
+    let idBloco = false;
+    const availableBlocks = [];
+    select.find('option').each(function() {
+        const text = $(this).text().trim();
+        if (text) {
+            availableBlocks.push(text);
+        }
+        if (text.includes(numBloco)) {
+            idBloco = $(this).val();
+            return false;
+        }
+    });
+
+    if (!idBloco) {
+        throw new Error(`Bloco de assinatura número "${numBloco}" não encontrado nas opções disponíveis: [${availableBlocks.join(' | ')}].`);
+    }
+
+    select.val(idBloco);
+    let params = form.serialize();
+    const submitBtn = form.find('#sbmSalvar, #btnSalvar, input[type="submit"]');
+    if (submitBtn.length && submitBtn.attr('name')) {
+        params += `&${submitBtn.attr('name')}=${encodeURIComponent(submitBtn.val() || '')}`;
+    }
+
+    let actionUrl = form.attr('action');
+    if (actionUrl && !actionUrl.startsWith('http') && !actionUrl.startsWith('/')) {
+        actionUrl = url_host.replace('controlador.php','') + actionUrl;
+    }
+
+    const responsePost = await $.ajax({
+        method: 'POST',
+        url: actionUrl,
+        data: params,
+        contentType: 'application/x-www-form-urlencoded; charset=ISO-8859-1'
+    });
+
+    const docPost = parser.parseFromString(responsePost, "text/html");
+    const errorMsg = $(docPost).find('.infraMensagem, #divInfraMensagem, .infraErro').text().trim();
+    if (errorMsg) {
+        throw new Error(`Erro ao salvar inclusão em bloco: ${errorMsg}`);
     }
 };

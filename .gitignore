@@ -110,3 +110,6 @@ debug.log
 error.log 
 dist/js/sei-pro_new.js
 dist/js/sei-pro_new.js
+
+# AI Scratch folder
+scratch/
