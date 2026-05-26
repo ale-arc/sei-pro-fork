@@ -1106,10 +1106,15 @@ const getSerieForm = async (htmlFullList, id_tipo_procedimento, nameDoc = null, 
         } else if (nameDoc) {
             let hdnIdSerie = false; 
 
-            urlForm.find('input.infraCheckbox').each(function(){
-                if ($(this).attr('title').startsWith(nameDoc)) {
-                    hdnIdSerie = $(this).val();
-                    return false;
+            urlForm.find('input.infraCheckbox, input.infraCheckboxInput').each(function(){
+                const titleAttr = $(this).attr('title');
+                if (titleAttr) {
+                    const normTitle = removeAcentos(titleAttr.trim().toLowerCase());
+                    const normName = removeAcentos(nameDoc.trim().toLowerCase());
+                    if (normName.startsWith(normTitle) || normTitle.startsWith(normName)) {
+                        hdnIdSerie = $(this).val();
+                        return false;
+                    }
                 }
             });
 
