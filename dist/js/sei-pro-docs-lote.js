@@ -440,6 +440,7 @@ var checkBlocoAssinaturaInput = () => {
 };
 var docsLote_getLinkNewDoc = async (param, dataCSV) => {
     let urlNewDoc = false;
+    let urlArvore = false;
     if (param.createNewProcs) {
 
         const txtEspecificacaoProcesso = param.txtEspecificacaoProcesso.replace(/##(.*?)##/g, function(match, chave) {
@@ -448,7 +449,9 @@ var docsLote_getLinkNewDoc = async (param, dataCSV) => {
 
         const urlProcesso = await docsLote_setNewProc(param.idTipoProcedimento, txtEspecificacaoProcesso);
         if (urlProcesso) {
-            urlNewDoc = await docsLote_getUrlNewDoc(urlProcesso);
+            const res = await docsLote_getUrlNewDoc(urlProcesso);
+            urlNewDoc = res.urlNewDoc;
+            urlArvore = res.urlArvore;
         }
     } else if (param.createExistingProcs) {
         const processNumber = dataCSV[param.colunaProcesso];
@@ -481,14 +484,17 @@ var docsLote_getLinkNewDoc = async (param, dataCSV) => {
         
         const redirectUrl = xhr.responseURL;
         if (redirectUrl && redirectUrl.includes('acao=procedimento_trabalhar')) {
-            urlNewDoc = await docsLote_getUrlNewDoc(redirectUrl);
+            const res = await docsLote_getUrlNewDoc(redirectUrl);
+            urlNewDoc = res.urlNewDoc;
+            urlArvore = res.urlArvore;
         } else {
             throw new Error(`Processo ${processNumber} não localizado no SEI ou sem permissão de acesso.`);
         }
     } else {
         urlNewDoc = getUrlNewDocArvore();
+        urlArvore = $('#ifrArvore').attr('src');
     }
-    return urlNewDoc;
+    return { urlNewDoc, urlArvore };
 }
 var docsLote_execute = async (param) => {
     aborted = false;
@@ -520,7 +526,8 @@ var docsLote_execute = async (param) => {
 
         for (let i = 0; i < CSVData.length; i++) {
             try {
-                const urlNewDoc = await docsLote_getLinkNewDoc(param, CSVData[i]);
+                const linkInfo = await docsLote_getLinkNewDoc(param, CSVData[i]);
+                const urlNewDoc = linkInfo.urlNewDoc;
                 const response1 = await docsLote_clickNewDoc(urlNewDoc);
                 const response2 = await docsLote_selectDocType(response1.urlExpandDocList);
                 const response3 = await docsLote_formNewDoc(response2.urlFormNewDoc, CSVData[i], param);
@@ -535,7 +542,7 @@ var docsLote_execute = async (param) => {
                         });
                         const lastDoc = docsCriados[docsCriados.length - 1];
                         if (lastDoc) {
-                            await docsLote_incluirEmBloco(lastDoc.id_documento, lastDoc.id_procedimento, blockNum.trim());
+                            await docsLote_incluirEmBloco(lastDoc.id_documento, lastDoc.id_procedimento, blockNum.trim(), linkInfo.urlArvore);
                         }
                     }
                     $('#progress').html(`<p style="text-align:center">${i + 1}/${CSVData.length}<span style="display:block;white-space: nowrap;color: #ccc;font-size: 8pt;padding:5px">\u2592\u2592\u2592\u2592\u2592\u2592</span></p>`);
@@ -1471,100 +1478,193 @@ const docsLote_getUrlNewDoc = async (urlProcesso) => {
     try {
         // 1. Obter HTML do processo
         const html = await getProcessHtml(urlProcesso);
-        
-        // 2. Obter URL da árvore
+
+        // 2. Obter URL da árvore (com hash válido, reutilizável durante o lote)
         const urlArvore = getTreeUrl(html);
-        
+
         // 3. Obter HTML da árvore
         const htmlArvore = await getTreeHtml(urlArvore);
-        
+
         // 4. Extrair URL de novo documento
         const urlNewDoc = extractNewDocUrl(htmlArvore);
-        
-        return urlNewDoc;
-        
+
+        return { urlNewDoc, urlArvore };
+
     } catch (error) {
         console.error('Erro ao obter URL de novo documento:', error);
         alertaBoxPro('Error', 'exclamation-triangle', error.message);
-        return null;
+        return { urlNewDoc: null, urlArvore: null };
     }
 };
 
-var docsLote_incluirEmBloco = async (id_documento, id_procedimento, numBloco) => {
-    const urlParams = getParamsUrlPro(window.location.href);
-    let urlProc = url_host.replace('controlador.php','') + `controlador.php?acao=procedimento_trabalhar&id_procedimento=${id_procedimento}`;
-    if (urlParams.infra_sistema) urlProc += `&infra_sistema=${urlParams.infra_sistema}`;
-    if (urlParams.infra_unidade_atual) urlProc += `&infra_unidade_atual=${urlParams.infra_unidade_atual}`;
+var docsLote_incluirEmBloco = async (id_documento, id_procedimento, numBloco, urlArvore = false) => {
+    const cleanUrl = (url) => {
+        if (!url) return url;
+        return String(url).replaceAll('&amp;', '&').replaceAll('&AMP;', '&').replace(/[\\"]/g, '');
+    };
 
-    const htmlProc = await $.ajax({ url: urlProc });
-    const parserProc = new DOMParser();
-    const docProc = parserProc.parseFromString(htmlProc, "text/html");
-    const urlArvore = $(docProc).find('#ifrArvore').attr('src');
-    if (!urlArvore) {
-        let errorMsg = $(docProc).find('.infraMensagem, #divInfraMensagem, .infraErro').text().trim();
-        throw new Error(errorMsg || "Não foi possível carregar a árvore do processo para obter os links autorizados.");
+    const absoluteUrl = (url) => {
+        url = cleanUrl(url);
+        if (!url) return url;
+        if (/^https?:\/\//i.test(url)) return url;
+        if (url.startsWith('/')) return `${window.location.origin}${url}`;
+        return `${url_host.replace('controlador.php', '')}${url}`;
+    };
+
+    const requestHtml = async (url, options = {}) => {
+        return await $.ajax({
+            method: options.method || 'GET',
+            url: absoluteUrl(url),
+            data: options.data || undefined,
+            contentType: options.contentType || undefined
+        });
+    };
+
+    const extractLinks = (html) => {
+        // Não usamos getLinksInText aqui: no HTML da árvore os links de ação por
+        // documento (incl. bloco_escolher) ficam dentro de strings JS (Nos[].acoes),
+        // que aquela função não captura. O split por aspas varre o texto bruto.
+        let links = [];
+        String(html).split("'").filter((el) => el.indexOf('controlador.php') !== -1).forEach((value) => {
+            if (value.indexOf('"') !== -1) {
+                value.split('"').filter((el) => el.indexOf('controlador.php') !== -1).forEach((link) => links.push(cleanUrl(link)));
+            } else {
+                links.push(cleanUrl(value));
+            }
+        });
+        return links.sort().filter((item, pos, ary) => !pos || item != ary[pos - 1]);
+    };
+
+    const buildPostData = (form, selectName, idBloco) => {
+        const params = {};
+
+        form.find('input, select, textarea').each(function() {
+            const input = $(this);
+            const name = input.attr('name');
+            const type = (input.attr('type') || '').toLowerCase();
+            if (!name || ['button', 'submit', 'reset', 'image'].includes(type)) return;
+            if ((type === 'checkbox' || type === 'radio') && !input.is(':checked')) return;
+
+            if (name === selectName) {
+                params[name] = idBloco;
+            } else if (input.is('select') && input.prop('multiple')) {
+                params[name] = input.val() || [];
+            } else {
+                params[name] = input.val() || '';
+            }
+        });
+
+        if (selectName && typeof params[selectName] === 'undefined') params[selectName] = idBloco;
+
+        const submit = form.find('#sbmSalvar, #btnSalvar, input[type="submit"], button[type="submit"], button:not([type])').first();
+        if (submit.length && submit.attr('name') && typeof params[submit.attr('name')] === 'undefined') {
+            params[submit.attr('name')] = submit.val() || submit.text() || '';
+        }
+
+        return $.param(params);
+    };
+
+    const matchDocLink = (link) => {
+        return link.indexOf('id_documento=' + id_documento) !== -1 || link.indexOf('id_protocolo=' + id_documento) !== -1;
+    };
+    const findBlocoLink = (links) => links.find((link) => link.indexOf('bloco_escolher') !== -1 && matchDocLink(link));
+    const isInvalidPage = (html) => /sem assinatura|login_especial|Acesso negado/i.test(String(html));
+
+    // O infra_hash do SEI assina a URL inteira e expira/rotaciona, então NÃO é
+    // possível reconstruí-lo nem reutilizá-lo com parâmetros diferentes. A fonte
+    // confiável é a URL de árvore (arvore_visualizar) válida capturada durante a
+    // criação do documento — ela é reutilizável e, ao ser rebaixada após a
+    // criação, já contém o documento recém-gerado e seu link 'bloco_escolher'.
+    const arvoreCandidates = [];
+    if (urlArvore) arvoreCandidates.push(urlArvore);
+    const liveArvoreSrc = $('#ifrArvore').attr('src');
+    if (liveArvoreSrc && arvoreCandidates.indexOf(liveArvoreSrc) === -1) arvoreCandidates.push(liveArvoreSrc);
+
+    let urlBloco = false;
+    for (let i = 0; i < arvoreCandidates.length && !urlBloco; i++) {
+        let htmlArvore;
+        try {
+            htmlArvore = await requestHtml(arvoreCandidates[i]);
+        } catch (e) {
+            continue;
+        }
+        if (isInvalidPage(htmlArvore)) continue;
+        urlBloco = findBlocoLink(extractLinks(htmlArvore));
     }
 
-    const htmlTree = await $.ajax({ url: urlArvore });
-    const regex = new RegExp(`controlador\\.php\\?acao=bloco_escolher[^'"]*id_documento=${id_documento}[^'"]*|controlador\\.php\\?[^'"]*id_documento=${id_documento}[^'"]*acao=bloco_escolher[^'"]*`);
-    const match = htmlTree.match(regex);
-    if (!match) {
-        throw new Error(`Link de inclusão em bloco não localizado para o documento ID ${id_documento} na árvore do processo.`);
+    // Último recurso: links em memória da árvore viva (podem ter hash expirado).
+    if (!urlBloco && $('#ifrArvore')[0] && $('#ifrArvore')[0].contentWindow && $('#ifrArvore')[0].contentWindow.arrayLinksArvoreAll) {
+        urlBloco = findBlocoLink($('#ifrArvore')[0].contentWindow.arrayLinksArvoreAll.map(cleanUrl));
     }
 
-    const urlBloco = match[0].replaceAll('&amp;', '&');
-
-    const htmlPage = await $.ajax({ url: urlBloco });
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(htmlPage, "text/html");
-    const $html = $(doc);
-    
-    const form = $html.find('form');
-    if (form.length === 0) {
-        let errorMsg = $html.find('.infraMensagem, #divInfraMensagem, .infraErro').text().trim();
-        throw new Error(errorMsg || "Formulário de inclusão em bloco não encontrado.");
+    if (!urlBloco) {
+        throw new Error("Link 'Incluir em Bloco de Assinatura' não encontrado para o documento gerado.");
     }
 
-    const select = $html.find('#selBloco, select[name="selBloco"]');
+    console.log('SEI-Pro [Bloco]: link de inclusão encontrado para o documento', id_documento);
+
+    const htmlBloco = await requestHtml(urlBloco);
+    const blocoPage = $(htmlBloco);
+    const form = blocoPage.find('form').filter(function() {
+        return $(this).find('select').length > 0;
+    }).first();
+
+    if (!form.length) {
+        const errorMsg = blocoPage.find('.infraMensagem, #divInfraMensagem, .infraErro').text().trim();
+        throw new Error(errorMsg || 'Formulário de inclusão em bloco não encontrado.');
+    }
+
+    const select = form.find('#selBloco, select[name="selBloco"], select[id*="Bloco"], select[name*="Bloco"]').first();
+    if (!select.length) {
+        throw new Error('Campo de seleção do bloco de assinatura não encontrado.');
+    }
+
+    const blocoBusca = String(numBloco || '').trim();
+    const blocoBuscaDigits = blocoBusca.replace(/\D/g, '');
     let idBloco = false;
     const availableBlocks = [];
+
+    // No SEI, cada opção é "NÚMERO - Descrição" e o value é o id do bloco.
+    // Casamos pelo número exibido no início do texto (ou pelo próprio value),
+    // evitando dígitos que apareçam na descrição do bloco.
     select.find('option').each(function() {
-        const text = $(this).text().trim();
-        if (text) {
-            availableBlocks.push(text);
-        }
-        if (text.includes(numBloco)) {
-            idBloco = $(this).val();
+        const option = $(this);
+        const value = String(option.val() || '').trim();
+        const text = option.text().trim();
+        if (!value || value === 'null') return; // ignora placeholder "Selecione..."
+        if (text) availableBlocks.push(text);
+
+        const leadingNumber = (text.match(/^\s*(\d+)/) || [])[1] || '';
+        const exactValue = value === blocoBusca;
+        const exactLeading = blocoBuscaDigits && leadingNumber === blocoBuscaDigits;
+
+        if (exactValue || exactLeading) {
+            idBloco = value;
             return false;
         }
     });
 
     if (!idBloco) {
-        throw new Error(`Bloco de assinatura número "${numBloco}" não encontrado nas opções disponíveis: [${availableBlocks.join(' | ')}].`);
+        throw new Error(`Bloco de assinatura número "${blocoBusca}" não encontrado nas opções disponíveis: [${availableBlocks.join(' | ')}].`);
     }
 
     select.val(idBloco);
-    let params = form.serialize();
-    const submitBtn = form.find('#sbmSalvar, #btnSalvar, input[type="submit"]');
-    if (submitBtn.length && submitBtn.attr('name')) {
-        params += `&${submitBtn.attr('name')}=${encodeURIComponent(submitBtn.val() || '')}`;
-    }
+    const action = form.attr('action') || urlBloco;
+    const postData = buildPostData(form, select.attr('name'), idBloco);
 
-    let actionUrl = form.attr('action');
-    if (actionUrl && !actionUrl.startsWith('http') && !actionUrl.startsWith('/')) {
-        actionUrl = url_host.replace('controlador.php','') + actionUrl;
-    }
+    console.log('SEI-Pro [Bloco]: Bloco selecionado. Enviando formulário...');
 
-    const responsePost = await $.ajax({
+    const response = await requestHtml(action, {
         method: 'POST',
-        url: actionUrl,
-        data: params,
+        data: postData,
         contentType: 'application/x-www-form-urlencoded; charset=ISO-8859-1'
     });
-
-    const docPost = parser.parseFromString(responsePost, "text/html");
-    const errorMsg = $(docPost).find('.infraMensagem, #divInfraMensagem, .infraErro').text().trim();
-    if (errorMsg) {
+    const responsePage = $(response);
+    const errorMsg = responsePage.find('.infraMensagem, #divInfraMensagem, .infraErro').text().trim();
+    if (errorMsg && !/inclu/i.test(errorMsg)) {
         throw new Error(`Erro ao salvar inclusão em bloco: ${errorMsg}`);
     }
+
+    console.log('SEI-Pro [Bloco]: Sucesso na inclusão!');
+    return { success: true, id_bloco: idBloco };
 };
